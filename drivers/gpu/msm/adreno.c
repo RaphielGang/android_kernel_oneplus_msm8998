@@ -1162,6 +1162,10 @@ static int _adreno_start(struct adreno_device *adreno_dev)
 	/* make sure ADRENO_DEVICE_STARTED is not set here */
 	BUG_ON(test_bit(ADRENO_DEVICE_STARTED, &adreno_dev->priv));
 
+	/* disallow l2pc during wake up to improve GPU wake up time */
+	kgsl_pwrctrl_update_l2pc(&adreno_dev->dev,
+			KGSL_L2PC_WAKEUP_TIMEOUT);
+
 	pm_qos_update_request(&device->pwrctrl.pm_qos_req_dma,
 			pmqos_wakeup_vote);
 
@@ -2559,6 +2563,9 @@ static void adreno_iommu_sync(struct kgsl_device *device, bool sync)
 	struct scm_desc desc = {0};
 	int ret;
 
+	if (!ADRENO_QUIRK(ADRENO_DEVICE(device), ADRENO_QUIRK_IOMMU_SYNC))
+		return;
+
 	if (sync == true) {
 		mutex_lock(&kgsl_mmu_sync);
 		desc.args[0] = true;
@@ -2575,25 +2582,29 @@ static void adreno_iommu_sync(struct kgsl_device *device, bool sync)
 	}
 }
 
-static void _regulator_disable(struct kgsl_regulator *regulator, bool poll)
+static void
+_regulator_disable(struct kgsl_regulator *regulator, unsigned int timeout)
 {
-	unsigned long wait_time = jiffies + msecs_to_jiffies(200);
+	unsigned long wait_time;
 
 	if (IS_ERR_OR_NULL(regulator->reg))
 		return;
 
 	regulator_disable(regulator->reg);
 
-	if (poll == false)
-		return;
+	wait_time = jiffies + msecs_to_jiffies(timeout);
 
+	/* Poll for regulator status to ensure it's OFF */
 	while (!time_after(jiffies, wait_time)) {
 		if (!regulator_is_enabled(regulator->reg))
 			return;
-		cpu_relax();
+		usleep_range(10, 100);
 	}
 
-	KGSL_CORE_ERR("regulator '%s' still on after 200ms\n", regulator->name);
+	if (!regulator_is_enabled(regulator->reg))
+		return;
+
+	KGSL_CORE_ERR("regulator '%s' disable timed out\n", regulator->name);
 }
 
 static void adreno_regulator_disable_poll(struct kgsl_device *device)
@@ -2601,18 +2612,13 @@ static void adreno_regulator_disable_poll(struct kgsl_device *device)
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 	int i;
-
-	/* Fast path - hopefully we don't need this quirk */
-	if (!ADRENO_QUIRK(adreno_dev, ADRENO_QUIRK_IOMMU_SYNC)) {
-		for (i = KGSL_MAX_REGULATORS - 1; i >= 0; i--)
-			_regulator_disable(&pwr->regulators[i], false);
-		return;
-	}
+	unsigned int timeout =
+		ADRENO_QUIRK(adreno_dev, ADRENO_QUIRK_IOMMU_SYNC) ? 200 : 5000;
 
 	adreno_iommu_sync(device, true);
 
-	for (i = 0; i < KGSL_MAX_REGULATORS; i++)
-		_regulator_disable(&pwr->regulators[i], true);
+	for (i = KGSL_MAX_REGULATORS - 1; i >= 0; i--)
+		_regulator_disable(&pwr->regulators[i], timeout);
 
 	adreno_iommu_sync(device, false);
 }
@@ -2705,6 +2711,7 @@ static struct platform_driver adreno_platform_driver = {
 		.name = DEVICE_3D_NAME,
 		.pm = &kgsl_pm_ops,
 		.of_match_table = adreno_match_table,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	}
 };
 

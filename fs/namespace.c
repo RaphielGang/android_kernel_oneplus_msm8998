@@ -1747,8 +1747,9 @@ dput_and_out:
 	}
 	if (!retval || (flags & MNT_FORCE)) {
 		/* filesystem needs to handle unclosed namespaces */
-		if (mnt->mnt.mnt_sb->s_op->umount_end)
-			mnt->mnt.mnt_sb->s_op->umount_end(mnt->mnt.mnt_sb, flags);
+		if (!mnt->mnt.mnt_sb->s_op->umount_end)
+			goto out;
+		mnt->mnt.mnt_sb->s_op->umount_end(mnt->mnt.mnt_sb, flags);
 	}
 out:
 	return retval;

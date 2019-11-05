@@ -1913,7 +1913,7 @@ static long gpumem_free_entry_on_timestamp(struct kgsl_device *device,
 	kgsl_readtimestamp(device, context, KGSL_TIMESTAMP_RETIRED, &temp);
 	trace_kgsl_mem_timestamp_queue(device, entry, context->id, temp,
 		timestamp);
-	ret = kgsl_add_event(device, &context->events,
+	ret = kgsl_add_low_prio_event(device, &context->events,
 		timestamp, gpumem_free_func, entry);
 
 	if (ret)
@@ -2563,7 +2563,7 @@ static int kgsl_setup_dma_buf(struct kgsl_device *device,
 				struct kgsl_mem_entry *entry,
 				struct dma_buf *dmabuf)
 {
-	int ret = 0;
+	int i, ret = 0;
 	struct scatterlist *s;
 	struct sg_table *sg_table;
 	struct dma_buf_attachment *attach = NULL;
@@ -2603,7 +2603,7 @@ static int kgsl_setup_dma_buf(struct kgsl_device *device,
 	entry->memdesc.sgt = sg_table;
 
 	/* Calculate the size of the memdesc from the sglist */
-	for (s = entry->memdesc.sgt->sgl; s != NULL; s = sg_next(s)) {
+	for_each_sg(sg_table->sgl, s, sg_table->nents, i) {
 		int priv = (entry->memdesc.priv & KGSL_MEMDESC_SECURE) ? 1 : 0;
 
 		/*
@@ -4968,6 +4968,18 @@ static void kgsl_core_exit(void)
 	unregister_chrdev_region(kgsl_driver.major, KGSL_DEVICE_MAX);
 }
 
+static long kgsl_run_one_worker(struct kthread_worker *worker,
+		struct task_struct **thread, const char *name)
+{
+	init_kthread_worker(worker);
+	*thread = kthread_run(kthread_worker_fn, worker, name);
+	if (IS_ERR(*thread)) {
+		pr_err("unable to start %s\n", name);
+		return PTR_ERR(thread);
+	}
+	return 0;
+}
+
 static int __init kgsl_core_init(void)
 {
 	int result = 0;
@@ -5038,17 +5050,16 @@ static int __init kgsl_core_init(void)
 	kgsl_driver.mem_workqueue = alloc_workqueue("kgsl-mementry",
 		WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
 
-	init_kthread_worker(&kgsl_driver.worker);
-
-	kgsl_driver.worker_thread = kthread_run(kthread_worker_fn,
-		&kgsl_driver.worker, "kgsl_worker_thread");
-
-	if (IS_ERR(kgsl_driver.worker_thread)) {
-		pr_err("unable to start kgsl thread\n");
+	if (IS_ERR_VALUE(kgsl_run_one_worker(&kgsl_driver.worker,
+			&kgsl_driver.worker_thread,
+			"kgsl_worker_thread")) ||
+		IS_ERR_VALUE(kgsl_run_one_worker(&kgsl_driver.low_prio_worker,
+			&kgsl_driver.low_prio_worker_thread,
+			"kgsl_low_prio_worker_thread")))
 		goto err;
-	}
 
 	sched_setscheduler(kgsl_driver.worker_thread, SCHED_FIFO, &param);
+	/* kgsl_driver.low_prio_worker_thread should not be SCHED_FIFO */
 
 	kgsl_events_init();
 

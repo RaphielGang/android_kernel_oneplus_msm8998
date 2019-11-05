@@ -648,6 +648,17 @@ static int sendcmd(struct adreno_device *adreno_dev,
 	secs = time.ktime;
 	nsecs = do_div(secs, 1000000000);
 
+	/*
+	 * For the first submission in any given command queue update the
+	 * expected expire time - this won't actually be used / updated until
+	 * the command queue in question goes current, but universally setting
+	 * it here avoids the possibilty of some race conditions with preempt
+	 */
+
+	if (dispatch_q->inflight == 1)
+		dispatch_q->expires = jiffies +
+			msecs_to_jiffies(adreno_drawobj_timeout);
+
 	trace_adreno_cmdbatch_submitted(drawobj, (int) dispatcher->inflight,
 		time.ticks, (unsigned long) secs, nsecs / 1000, drawctxt->rb,
 		adreno_get_rptr(drawctxt->rb));
@@ -659,17 +670,6 @@ static int sendcmd(struct adreno_device *adreno_dev,
 	dispatch_q->cmd_q[dispatch_q->tail] = cmdobj;
 	dispatch_q->tail = (dispatch_q->tail + 1) %
 		ADRENO_DISPATCH_DRAWQUEUE_SIZE;
-
-	/*
-	 * For the first submission in any given command queue update the
-	 * expected expire time - this won't actually be used / updated until
-	 * the command queue in question goes current, but universally setting
-	 * it here avoids the possibilty of some race conditions with preempt
-	 */
-
-	if (dispatch_q->inflight == 1)
-		dispatch_q->expires = jiffies +
-			msecs_to_jiffies(adreno_drawobj_timeout);
 
 	/*
 	 * If we believe ourselves to be current and preemption isn't a thing,
@@ -1368,6 +1368,22 @@ int adreno_dispatcher_queue_cmds(struct kgsl_device_private *dev_priv,
 
 	user_ts = *timestamp;
 
+	/*
+	 * If there is only one drawobj in the array and it is of
+	 * type SYNCOBJ_TYPE, skip comparing user_ts as it can be 0
+	 */
+	if (!(count == 1 && drawobj[0]->type == SYNCOBJ_TYPE) &&
+		(drawctxt->base.flags & KGSL_CONTEXT_USER_GENERATED_TS)) {
+		/*
+		 * User specified timestamps need to be greater than the last
+		 * issued timestamp in the context
+		 */
+		if (timestamp_cmp(drawctxt->timestamp, user_ts) >= 0) {
+			spin_unlock(&drawctxt->lock);
+			return -ERANGE;
+		}
+	}
+
 	for (i = 0; i < count; i++) {
 
 		switch (drawobj[i]->type) {
@@ -1423,7 +1439,9 @@ int adreno_dispatcher_queue_cmds(struct kgsl_device_private *dev_priv,
 
 	spin_unlock(&drawctxt->lock);
 
-	kgsl_pwrctrl_update_l2pc(&adreno_dev->dev);
+	if (device->pwrctrl.l2pc_update_queue)
+		kgsl_pwrctrl_update_l2pc(&adreno_dev->dev,
+				KGSL_L2PC_QUEUE_TIMEOUT);
 
 	/* Add the context to the dispatcher pending list */
 	dispatcher_queue_context(adreno_dev, drawctxt);

@@ -63,6 +63,8 @@ struct sched_param {
 
 #include <asm/processor.h>
 
+extern bool energy_aware_enable;
+
 #if defined(CONFIG_SCHED_TUNE) && defined(CONFIG_CGROUP_SCHEDTUNE)
 void disable_schedtune_boost(int disable);
 #else
@@ -176,6 +178,7 @@ extern int nr_threads;
 DECLARE_PER_CPU(unsigned long, process_counts);
 extern int nr_processes(void);
 extern unsigned long nr_running(void);
+extern bool cpu_has_rt_task(int cpu);
 extern bool single_task_running(void);
 extern unsigned long nr_iowait(void);
 extern unsigned long nr_iowait_cpu(int cpu);
@@ -1603,11 +1606,6 @@ struct task_struct {
 	atomic_t usage;
 	unsigned int flags;	/* per process flags, defined below */
 	unsigned int ptrace;
-	unsigned int kill_flag;
-	struct timespec ttu;
-
-    /* add for fd leak debug */
-	bool dump_fd_leak;
 
 #ifdef CONFIG_SMP
 	struct llist_node wake_entry;
@@ -2533,7 +2531,6 @@ extern void do_set_cpus_allowed(struct task_struct *p,
 
 extern int set_cpus_allowed_ptr(struct task_struct *p,
 				const struct cpumask *new_mask);
-extern bool cpupri_check_rt(void);
 static inline void set_wake_up_idle(bool enabled)
 {
 	/* do nothing for now */
@@ -2549,10 +2546,6 @@ static inline int set_cpus_allowed_ptr(struct task_struct *p,
 	if (!cpumask_test_cpu(0, new_mask))
 		return -EINVAL;
 	return 0;
-}
-static inline bool cpupri_check_rt(void)
-{
-	return false;
 }
 #endif
 

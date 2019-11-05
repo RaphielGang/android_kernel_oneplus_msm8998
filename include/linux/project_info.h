@@ -8,8 +8,7 @@ typedef     __u8        uint8;
 #define SECURE_BOOT1			(SECURE_BOOT_BASE + 0x4*1)
 #define BUF_SIZE		64
 
-extern uint32_t chip_serial_num;
-extern unsigned long totalram_pages __read_mostly;
+extern unsigned long totalram_pages;
 
 
 struct project_info {
